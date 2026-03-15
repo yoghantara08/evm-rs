@@ -8,6 +8,12 @@ pub struct Stack {
     data: Vec<U256>,
 }
 
+impl Default for Stack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Stack {
     pub fn new() -> Self {
         Self {

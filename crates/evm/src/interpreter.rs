@@ -92,6 +92,7 @@ pub fn execute_with_trace(
     (result, trace)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     bytecode: &[u8],
     pc: &mut usize,
@@ -234,7 +235,7 @@ fn run_loop(
             opcode::EXP => {
                 let base = pop!(stack);
                 let exponent = pop!(stack);
-                let exp_bytes = if exponent.is_zero() { 0u64 } else { (exponent.bit_len() as u64 + 7) / 8 };
+                let exp_bytes = if exponent.is_zero() { 0u64 } else { (exponent.bit_len() as u64).div_ceil(8) };
                 if let Err(e) = gas.consume(50 * exp_bytes) { return ExecutionResult::Halt { reason: e }; }
                 let result = base.pow(exponent);
                 push!(stack, result);
@@ -245,7 +246,7 @@ fn run_loop(
                 let result = if b < U256::from(31) {
                     let bit_index = b.to::<usize>() * 8 + 7;
                     let sign_bit = U256::from(1) << bit_index;
-                    let mask = sign_bit - U256::from(1) | sign_bit;
+                    let mask = (sign_bit - U256::from(1)) | sign_bit;
                     if x & sign_bit != U256::ZERO {
                         x | !mask
                     } else {

@@ -5,6 +5,12 @@ pub struct Memory {
     data: Vec<u8>,
 }
 
+impl Default for Memory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Memory {
     pub fn new() -> Self {
         Self { data: Vec::new() }
@@ -17,7 +23,7 @@ impl Memory {
     fn expand(&mut self, offset: usize, size: usize) {
         let needed = offset + size;
         if needed > self.data.len() {
-            let words = (needed + 31) / 32;
+            let words = needed.div_ceil(32);
             self.data.resize(words * 32, 0);
         }
     }
