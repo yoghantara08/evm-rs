@@ -42,8 +42,8 @@ pub fn opcode_name(op: u8) -> String {
 pub fn opcode_gas(op: u8) -> u64 {
     match op {
         STOP => 0,
-        ADD | MUL | SUB => 3,                     // G_verylow
-        DIV | SDIV | MOD | SMOD | SIGNEXTEND => 5, // G_low
+        ADD | SUB => 3,                                    // G_verylow
+        MUL | DIV | SDIV | MOD | SMOD | SIGNEXTEND => 5,  // G_low
         ADDMOD | MULMOD => 8,                      // G_mid
         EXP => 10,                                 // base cost (+ 50 per exponent byte)
         POP => 2,                                  // G_base
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn static_gas_costs() {
         assert_eq!(opcode_gas(0x01), 3); // ADD
-        assert_eq!(opcode_gas(0x02), 3); // MUL
+        assert_eq!(opcode_gas(0x02), 5); // MUL (G_low)
         assert_eq!(opcode_gas(0x03), 3); // SUB
         assert_eq!(opcode_gas(0x04), 5); // DIV
         assert_eq!(opcode_gas(0x06), 5); // MOD

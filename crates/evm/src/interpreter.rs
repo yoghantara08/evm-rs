@@ -472,6 +472,22 @@ mod tests {
     }
 
     #[test]
+    fn sdiv_min_int_by_neg_one() {
+        // MIN_I256 / -1 = MIN_I256 (Yellow Paper special case: overflow wraps)
+        let min_i256: U256 = U256::from(1) << 255; // 2^255 = smallest negative signed value
+        let neg1 = U256::MAX; // -1 in two's complement
+        let mut bytecode = Vec::new();
+        bytecode.push(0x7F); // PUSH32 -1
+        bytecode.extend_from_slice(&neg1.to_be_bytes::<32>());
+        bytecode.push(0x7F); // PUSH32 MIN_I256
+        bytecode.extend_from_slice(&min_i256.to_be_bytes::<32>());
+        bytecode.push(0x05); // SDIV
+        bytecode.push(0x00); // STOP
+        let val = run_returning_stack(&bytecode);
+        assert_eq!(val, min_i256);
+    }
+
+    #[test]
     fn mod_op() {
         let val = run_returning_stack(&[0x60, 0x03, 0x60, 0x0A, 0x06, 0x00]);
         assert_eq!(val, uint!(1_U256));
