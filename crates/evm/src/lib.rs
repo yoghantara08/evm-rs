@@ -6,3 +6,4 @@ pub mod context;
 pub mod database;
 pub mod opcode;
 pub mod interpreter;
+pub mod disasm;
