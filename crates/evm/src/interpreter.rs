@@ -32,6 +32,16 @@ pub enum ExecutionResult {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct TraceStep {
+    pub pc: usize,
+    pub opcode_byte: u8,
+    pub opcode_name: String,
+    pub operand: Option<Vec<u8>>,
+    pub gas_used: u64,
+    pub stack: Vec<U256>,
+}
+
 /// Two's complement negation for U256.
 fn twos_complement(v: U256) -> U256 {
     (!v).wrapping_add(U256::from(1))
@@ -50,7 +60,7 @@ pub fn execute_returning_stack(
     let mut gas = Gas::new(ctx.gas_limit);
     let logs: Vec<Log> = Vec::new();
 
-    let result = run_loop(bytecode, &mut pc, &mut stack, &mut memory, &mut gas, logs, ctx, db);
+    let result = run_loop(bytecode, &mut pc, &mut stack, &mut memory, &mut gas, logs, ctx, db, None);
     let stack_values: Vec<U256> = (0..stack.len()).map(|i| stack.peek(i).unwrap()).collect();
     (result, stack_values)
 }
@@ -63,7 +73,23 @@ pub fn execute(ctx: &ExecutionContext, db: &mut dyn Database) -> ExecutionResult
     let mut gas = Gas::new(ctx.gas_limit);
     let logs: Vec<Log> = Vec::new();
 
-    run_loop(bytecode, &mut pc, &mut stack, &mut memory, &mut gas, logs, ctx, db)
+    run_loop(bytecode, &mut pc, &mut stack, &mut memory, &mut gas, logs, ctx, db, None)
+}
+
+pub fn execute_with_trace(
+    ctx: &ExecutionContext,
+    db: &mut dyn Database,
+) -> (ExecutionResult, Vec<TraceStep>) {
+    let bytecode = &ctx.code;
+    let mut pc: usize = 0;
+    let mut stack = Stack::new();
+    let mut memory = Memory::new();
+    let mut gas = Gas::new(ctx.gas_limit);
+    let logs: Vec<Log> = Vec::new();
+    let mut trace: Vec<TraceStep> = Vec::new();
+
+    let result = run_loop(bytecode, &mut pc, &mut stack, &mut memory, &mut gas, logs, ctx, db, Some(&mut trace));
+    (result, trace)
 }
 
 fn run_loop(
@@ -75,9 +101,38 @@ fn run_loop(
     logs: Vec<Log>,
     _ctx: &ExecutionContext,
     _db: &mut dyn Database,
+    mut trace: Option<&mut Vec<TraceStep>>,
 ) -> ExecutionResult {
+    macro_rules! pop {
+        ($stack:expr) => {
+            match $stack.pop() {
+                Ok(v) => v,
+                Err(e) => return ExecutionResult::Halt { reason: e },
+            }
+        };
+    }
+
+    macro_rules! push {
+        ($stack:expr, $val:expr) => {
+            if let Err(e) = $stack.push($val) {
+                return ExecutionResult::Halt { reason: e };
+            }
+        };
+    }
+
     loop {
         let op = bytecode.get(*pc).copied().unwrap_or(opcode::STOP);
+
+        // Capture trace metadata before execution
+        let step_pc = *pc;
+        let step_op = op;
+        let step_operand: Option<Vec<u8>> = if (0x60..=0x7F).contains(&op) {
+            let n = (op - 0x5F) as usize;
+            let end = (*pc + 1 + n).min(bytecode.len());
+            Some(bytecode[*pc + 1..end].to_vec())
+        } else {
+            None
+        };
 
         // Deduct static gas cost before execution
         let cost = opcode::opcode_gas(op);
@@ -87,6 +142,17 @@ fn run_loop(
 
         match op {
             opcode::STOP => {
+                if let Some(ref mut t) = trace {
+                    let stack_snapshot: Vec<U256> = (0..stack.len()).map(|i| stack.peek(i).unwrap()).collect();
+                    t.push(TraceStep {
+                        pc: step_pc,
+                        opcode_byte: step_op,
+                        opcode_name: opcode::opcode_name(step_op),
+                        operand: None,
+                        gas_used: gas.used(),
+                        stack: stack_snapshot,
+                    });
+                }
                 return ExecutionResult::Success {
                     gas_used: gas.used(),
                     return_data: Vec::new(),
@@ -95,29 +161,29 @@ fn run_loop(
             }
 
             opcode::ADD => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                if let Err(e) = stack.push(a.wrapping_add(b)) { return ExecutionResult::Halt { reason: e }; }
+                let a = pop!(stack);
+                let b = pop!(stack);
+                push!(stack, a.wrapping_add(b));
             }
             opcode::MUL => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                if let Err(e) = stack.push(a.wrapping_mul(b)) { return ExecutionResult::Halt { reason: e }; }
+                let a = pop!(stack);
+                let b = pop!(stack);
+                push!(stack, a.wrapping_mul(b));
             }
             opcode::SUB => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                if let Err(e) = stack.push(a.wrapping_sub(b)) { return ExecutionResult::Halt { reason: e }; }
+                let a = pop!(stack);
+                let b = pop!(stack);
+                push!(stack, a.wrapping_sub(b));
             }
             opcode::DIV => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let a = pop!(stack);
+                let b = pop!(stack);
                 let result = if b.is_zero() { U256::ZERO } else { a / b };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::SDIV => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let a = pop!(stack);
+                let b = pop!(stack);
                 let result = if b.is_zero() {
                     U256::ZERO
                 } else {
@@ -128,17 +194,17 @@ fn run_loop(
                     let quot = a_abs / b_abs;
                     if a_neg != b_neg { twos_complement(quot) } else { quot }
                 };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::MOD => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let a = pop!(stack);
+                let b = pop!(stack);
                 let result = if b.is_zero() { U256::ZERO } else { a % b };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::SMOD => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let a = pop!(stack);
+                let b = pop!(stack);
                 let result = if b.is_zero() {
                     U256::ZERO
                 } else {
@@ -149,33 +215,33 @@ fn run_loop(
                     let rem = a_abs % b_abs;
                     if a_neg { twos_complement(rem) } else { rem }
                 };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::ADDMOD => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let n = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let a = pop!(stack);
+                let b = pop!(stack);
+                let n = pop!(stack);
                 let result = if n.is_zero() { U256::ZERO } else { a.add_mod(b, n) };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::MULMOD => {
-                let a = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let n = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let a = pop!(stack);
+                let b = pop!(stack);
+                let n = pop!(stack);
                 let result = if n.is_zero() { U256::ZERO } else { a.mul_mod(b, n) };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::EXP => {
-                let base = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let exponent = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let base = pop!(stack);
+                let exponent = pop!(stack);
                 let exp_bytes = if exponent.is_zero() { 0u64 } else { (exponent.bit_len() as u64 + 7) / 8 };
                 if let Err(e) = gas.consume(50 * exp_bytes) { return ExecutionResult::Halt { reason: e }; }
                 let result = base.pow(exponent);
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
             opcode::SIGNEXTEND => {
-                let b = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
-                let x = match stack.pop() { Ok(v) => v, Err(e) => return ExecutionResult::Halt { reason: e } };
+                let b = pop!(stack);
+                let x = pop!(stack);
                 let result = if b < U256::from(31) {
                     let bit_index = b.to::<usize>() * 8 + 7;
                     let sign_bit = U256::from(1) << bit_index;
@@ -188,7 +254,7 @@ fn run_loop(
                 } else {
                     x
                 };
-                if let Err(e) = stack.push(result) { return ExecutionResult::Halt { reason: e }; }
+                push!(stack, result);
             }
 
             // PUSH1..PUSH32
@@ -200,16 +266,12 @@ fn run_loop(
                 bytes[32 - n..32 - n + copy_len]
                     .copy_from_slice(&bytecode[*pc + 1..*pc + 1 + copy_len]);
                 let value = U256::from_be_bytes(bytes);
-                if let Err(e) = stack.push(value) {
-                    return ExecutionResult::Halt { reason: e };
-                }
+                push!(stack, value);
                 *pc += n;
             }
 
             opcode::POP => {
-                if let Err(e) = stack.pop() {
-                    return ExecutionResult::Halt { reason: e };
-                }
+                pop!(stack);
             }
 
             _ => {
@@ -217,6 +279,19 @@ fn run_loop(
                     reason: EvmError::InvalidOpcode(op),
                 };
             }
+        }
+
+        // Record trace step after execution (stack state is post-execution)
+        if let Some(ref mut t) = trace {
+            let stack_snapshot: Vec<U256> = (0..stack.len()).map(|i| stack.peek(i).unwrap()).collect();
+            t.push(TraceStep {
+                pc: step_pc,
+                opcode_byte: step_op,
+                opcode_name: opcode::opcode_name(step_op),
+                operand: step_operand,
+                gas_used: gas.used(),
+                stack: stack_snapshot,
+            });
         }
 
         *pc += 1;
@@ -476,5 +551,21 @@ mod tests {
     fn signextend_positive() {
         let val = run_returning_stack(&[0x60, 0x7F, 0x60, 0x00, 0x0B, 0x00]);
         assert_eq!(val, uint!(0x7F_U256));
+    }
+
+    #[test]
+    fn trace_records_steps() {
+        let ctx = ExecutionContext {
+            code: vec![0x60, 0x01, 0x60, 0x02, 0x01, 0x00],
+            gas_limit: 10_000,
+            ..Default::default()
+        };
+        let mut db = StubDatabase;
+        let (result, trace) = execute_with_trace(&ctx, &mut db);
+        assert!(matches!(result, ExecutionResult::Success { .. }));
+        assert_eq!(trace.len(), 4);
+        assert_eq!(trace[0].pc, 0);
+        assert_eq!(trace[0].opcode_name, "PUSH1");
+        assert_eq!(trace[2].opcode_name, "ADD");
     }
 }
